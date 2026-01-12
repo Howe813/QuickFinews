@@ -1,11 +1,11 @@
 # QuickFinews - 财经新闻实时推送机器人
 
-一个集成 **TuShare 新闻接口**和**电报机器人**的 Python 应用，实现财经新闻的实时推送功能。
+一个集成 **TuShare 新闻接口**、**Finnhub API** 和**电报机器人**的 Python 应用，实现国内外财经新闻的实时推送功能。
 
 ## 功能特性
 
 - 🚀 **实时推送**：监听多个财经新闻来源，有新闻立即推送到电报
-- 📰 **多源支持**：支持 9 个主流财经新闻来源
+- 📰 **多源支持**：支持 9 个国内财经新闻来源 + Finnhub 国际新闻
   - 新浪财经
   - 华尔街见闻
   - 同花顺
@@ -15,6 +15,11 @@
   - 金融界
   - 财联社
   - 第一财经
+- **国际新闻**（Finnhub）
+  - 综合新闻（General）
+  - 外汇新闻（Forex）
+  - 加密货币（Crypto）
+  - 并购新闻（Merger）
 - 🔄 **去重机制**：自动记录已推送新闻，避免重复推送
 - 📊 **历史记录**：保存推送历史，便于追踪
 - 🛡️ **错误处理**：完善的错误处理和日志记录
@@ -23,7 +28,9 @@
 ## 系统要求
 
 - Python 3.7+
-- 有效的 TuShare API Token
+- 有效的 TuShare API Token（可选）
+- 有效的 Finnhub API Token（可选）
+- 至少需要 TuShare 或 Finnhub 其中之一
 - 有效的电报机器人 Token
 - 互联网连接
 
@@ -53,8 +60,11 @@ cp .env.example .env
 编辑 `.env` 文件：
 
 ```env
-# TuShare 配置
+# TuShare 配置（可选）
 TUSHARE_TOKEN=your_tushare_token
+
+# Finnhub 配置（可选）
+FINNHUB_TOKEN=your_finnhub_token
 
 # 电报机器人配置
 TELEGRAM_TOKEN=your_telegram_bot_token
@@ -66,11 +76,17 @@ CHECK_INTERVAL=60
 
 ### 获取必要的 Token
 
-#### TuShare Token
+#### TuShare Token（可选）
 1. 访问 [TuShare 官网](https://tushare.pro)
 2. 注册账户
 3. 在用户中心获取 API Token
 4. 申请 `news` 接口权限
+
+#### Finnhub Token（可选）
+1. 访问 [Finnhub 官网](https://finnhub.io)
+2. 注册免费账户
+3. 在 Dashboard 获取 API Key
+4. 免费版支持 60 次/分钟的请求
 
 #### 电报机器人 Token
 1. 在 Telegram 中搜索 `@BotFather`

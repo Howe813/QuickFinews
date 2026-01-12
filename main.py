@@ -2,8 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 QuickFinews - 财经新闻实时推送机器人
-集成 TuShare 新闻接口和电报机器人
+集成 TuShare 新闻接口、Finnhub API 和电报机器人
 """
+
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+load_dotenv()
 
 import os
 import sys
@@ -30,8 +35,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 新闻来源列表
-NEWS_SOURCES = ['sina', 'wallstreetcn', '10jqka', 'eastmoney', 'yuncaijing', 'fenghuang', 'jinrongjie', 'cls', 'yicai']
+# TuShare 新闻来源列表
+TUSHARE_SOURCES = ['sina', 'wallstreetcn', '10jqka', 'eastmoney', 'yuncaijing', 'fenghuang', 'jinrongjie', 'cls', 'yicai']
+
+# Finnhub 新闻类别
+FINNHUB_CATEGORIES = ['general', 'forex', 'crypto', 'merger']
 
 # 来源名称映射
 SOURCE_NAMES = {
@@ -43,7 +51,11 @@ SOURCE_NAMES = {
     'fenghuang': '凤凰新闻',
     'jinrongjie': '金融界',
     'cls': '财联社',
-    'yicai': '第一财经'
+    'yicai': '第一财经',
+    'finnhub_general': 'Finnhub 综合新闻',
+    'finnhub_forex': 'Finnhub 外汇新闻',
+    'finnhub_crypto': 'Finnhub 加密货币',
+    'finnhub_merger': 'Finnhub 并购新闻'
 }
 
 
@@ -107,24 +119,48 @@ class TelegramNotifier:
             logger.error(f"发送电报消息失败: {e}")
             return False
     
-    async def send_news(self, news: Dict) -> bool:
+    async def send_news(self, news: Dict, source_type: str = 'tushare') -> bool:
         """发送新闻到电报"""
         try:
-            # 构建消息
-            source = SOURCE_NAMES.get(news.get('src', ''), news.get('src', ''))
-            title = news.get('title', '无标题')
-            content = news.get('content', '')
-            datetime_str = news.get('datetime', '')
-            
-            # 限制内容长度
-            if len(content) > 200:
-                content = content[:200] + "..."
-            
-            message = f"""
+            if source_type == 'tushare':
+                # TuShare 新闻格式
+                source = SOURCE_NAMES.get(news.get('src', ''), news.get('src', ''))
+                title = news.get('title', '无标题')
+                content = news.get('content', '')
+                datetime_str = news.get('datetime', '')
+                
+                # 限制内容长度
+                if len(content) > 200:
+                    content = content[:200] + "..."
+                
+                message = f"""
 <b>📰 {source}</b>
 <b>{title}</b>
 
 {content}
+
+<i>{datetime_str}</i>
+"""
+            else:
+                # Finnhub 新闻格式
+                source = SOURCE_NAMES.get(news.get('source_key', ''), 'Finnhub')
+                headline = news.get('headline', '无标题')
+                summary = news.get('summary', '')
+                url = news.get('url', '')
+                datetime_ts = news.get('datetime', 0)
+                datetime_str = datetime.fromtimestamp(datetime_ts).strftime('%Y-%m-%d %H:%M:%S')
+                
+                # 限制摘要长度
+                if len(summary) > 200:
+                    summary = summary[:200] + "..."
+                
+                message = f"""
+<b>🌐 {source}</b>
+<b>{headline}</b>
+
+{summary}
+
+<a href="{url}">阅读原文</a>
 
 <i>{datetime_str}</i>
 """
@@ -136,8 +172,8 @@ class TelegramNotifier:
             return False
 
 
-class NewsCollector:
-    """新闻收集器 - 从 TuShare 获取新闻"""
+class TuShareCollector:
+    """TuShare 新闻收集器"""
     
     def __init__(self, tushare_token: str):
         ts.set_token(tushare_token)
@@ -152,6 +188,8 @@ class NewsCollector:
             
             # 转换为字典列表
             news_list = df.to_dict('records')
+            for news in news_list:
+                news['src'] = src
             logger.info(f"从 {SOURCE_NAMES.get(src, src)} 获取了 {len(news_list)} 条新闻")
             return news_list
         except Exception as e:
@@ -161,27 +199,95 @@ class NewsCollector:
     def get_all_news(self, start_date: str, end_date: str) -> List[Dict]:
         """获取所有来源的新闻"""
         all_news = []
-        for source in NEWS_SOURCES:
+        for source in TUSHARE_SOURCES:
             news = self.get_news(source, start_date, end_date)
             all_news.extend(news)
+            # 避免请求过快
+            time.sleep(1)
         
         # 按时间排序
         all_news.sort(key=lambda x: x.get('datetime', ''), reverse=True)
         return all_news
 
 
+class FinnhubCollector:
+    """Finnhub 新闻收集器"""
+    
+    def __init__(self, finnhub_token: str):
+        self.token = finnhub_token
+        self.base_url = 'https://finnhub.io/api/v1'
+        self.last_check_times = {}  # 记录每个类别的最后检查时间
+    
+    def get_news(self, category: str = 'general', min_id: int = 0) -> List[Dict]:
+        """获取指定类别的新闻"""
+        try:
+            url = f"{self.base_url}/news"
+            params = {
+                'category': category,
+                'token': self.token
+            }
+            
+            if min_id > 0:
+                params['minId'] = min_id
+            
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            news_list = response.json()
+            
+            if not isinstance(news_list, list):
+                logger.error(f"Finnhub API 返回格式错误: {news_list}")
+                return []
+            
+            # 添加来源标识
+            for news in news_list:
+                news['source_key'] = f'finnhub_{category}'
+                news['category_name'] = category
+            
+            logger.info(f"从 Finnhub {category} 获取了 {len(news_list)} 条新闻")
+            return news_list
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"获取 Finnhub {category} 新闻失败: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"处理 Finnhub {category} 新闻失败: {e}")
+            return []
+    
+    def get_all_news(self, categories: List[str] = None) -> List[Dict]:
+        """获取所有类别的新闻"""
+        if categories is None:
+            categories = FINNHUB_CATEGORIES
+        
+        all_news = []
+        for category in categories:
+            news = self.get_news(category)
+            all_news.extend(news)
+            # 避免请求过快
+            time.sleep(0.5)
+        
+        # 按时间排序
+        all_news.sort(key=lambda x: x.get('datetime', 0), reverse=True)
+        return all_news
+
+
 class NewsBot:
     """新闻机器人 - 主控制器"""
     
-    def __init__(self, tushare_token: str, telegram_token: str, telegram_chat_id: str):
-        self.collector = NewsCollector(tushare_token)
+    def __init__(self, tushare_token: str, finnhub_token: str, telegram_token: str, telegram_chat_id: str):
+        self.tushare_collector = TuShareCollector(tushare_token) if tushare_token else None
+        self.finnhub_collector = FinnhubCollector(finnhub_token) if finnhub_token else None
         self.notifier = TelegramNotifier(telegram_token, telegram_chat_id)
         self.tracker = NewsTracker()
         self.running = False
         self.last_check_time = datetime.now() - timedelta(minutes=5)
+        self.last_finnhub_ids = {}  # 记录每个类别的最后新闻ID
     
-    async def check_and_push_news(self):
-        """检查新闻并推送"""
+    async def check_and_push_tushare_news(self):
+        """检查并推送 TuShare 新闻"""
+        if not self.tushare_collector:
+            return
+        
         try:
             # 计算时间范围（最近5分钟）
             end_time = datetime.now()
@@ -190,38 +296,84 @@ class NewsBot:
             start_date = start_time.strftime('%Y-%m-%d %H:%M:%S')
             end_date = end_time.strftime('%Y-%m-%d %H:%M:%S')
             
-            logger.info(f"检查新闻: {start_date} 到 {end_date}")
+            logger.info(f"检查 TuShare 新闻: {start_date} 到 {end_date}")
             
             # 获取新闻
-            news_list = self.collector.get_all_news(start_date, end_date)
+            news_list = self.tushare_collector.get_all_news(start_date, end_date)
             
             if not news_list:
-                logger.info("未发现新闻")
-                self.last_check_time = end_time
+                logger.info("未发现 TuShare 新闻")
                 return
             
-            logger.info(f"发现 {len(news_list)} 条新闻")
+            logger.info(f"发现 {len(news_list)} 条 TuShare 新闻")
             
             # 推送新新闻
             sent_count = 0
             for news in news_list:
                 # 生成唯一ID
-                news_id = f"{news.get('src', '')}_{news.get('datetime', '')}_{hash(news.get('title', ''))}"
+                news_id = f"tushare_{news.get('src', '')}_{news.get('datetime', '')}_{hash(news.get('title', ''))}"
                 
                 if self.tracker.is_new(news_id):
                     # 推送新闻
-                    success = await self.notifier.send_news(news)
+                    success = await self.notifier.send_news(news, source_type='tushare')
                     if success:
                         self.tracker.mark_as_sent(news_id)
                         sent_count += 1
                     # 避免请求过快
                     await asyncio.sleep(0.5)
             
-            logger.info(f"本次推送了 {sent_count} 条新闻")
-            self.last_check_time = end_time
+            logger.info(f"本次推送了 {sent_count} 条 TuShare 新闻")
             
         except Exception as e:
-            logger.error(f"检查和推送新闻时出错: {e}")
+            logger.error(f"检查和推送 TuShare 新闻时出错: {e}")
+    
+    async def check_and_push_finnhub_news(self):
+        """检查并推送 Finnhub 新闻"""
+        if not self.finnhub_collector:
+            return
+        
+        try:
+            logger.info("检查 Finnhub 新闻")
+            
+            # 获取新闻
+            news_list = self.finnhub_collector.get_all_news()
+            
+            if not news_list:
+                logger.info("未发现 Finnhub 新闻")
+                return
+            
+            logger.info(f"发现 {len(news_list)} 条 Finnhub 新闻")
+            
+            # 推送新新闻
+            sent_count = 0
+            for news in news_list:
+                # 生成唯一ID
+                news_id = f"finnhub_{news.get('id', '')}_{news.get('category_name', '')}"
+                
+                if self.tracker.is_new(news_id):
+                    # 推送新闻
+                    success = await self.notifier.send_news(news, source_type='finnhub')
+                    if success:
+                        self.tracker.mark_as_sent(news_id)
+                        sent_count += 1
+                    # 避免请求过快
+                    await asyncio.sleep(0.5)
+            
+            logger.info(f"本次推送了 {sent_count} 条 Finnhub 新闻")
+            
+        except Exception as e:
+            logger.error(f"检查和推送 Finnhub 新闻时出错: {e}")
+    
+    async def check_and_push_news(self):
+        """检查并推送所有新闻"""
+        # 检查 TuShare 新闻
+        await self.check_and_push_tushare_news()
+        
+        # 检查 Finnhub 新闻
+        await self.check_and_push_finnhub_news()
+        
+        # 更新最后检查时间
+        self.last_check_time = datetime.now()
     
     async def run(self, check_interval: int = 60):
         """运行机器人"""
@@ -249,15 +401,12 @@ async def main():
     """主函数"""
     # 从环境变量读取配置
     tushare_token = os.getenv('TUSHARE_TOKEN')
+    finnhub_token = os.getenv('FINNHUB_TOKEN')
     telegram_token = os.getenv('TELEGRAM_TOKEN')
     telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
     check_interval = int(os.getenv('CHECK_INTERVAL', '60'))
     
     # 验证配置
-    if not tushare_token:
-        logger.error("未设置 TUSHARE_TOKEN 环境变量")
-        sys.exit(1)
-    
     if not telegram_token:
         logger.error("未设置 TELEGRAM_TOKEN 环境变量")
         sys.exit(1)
@@ -266,16 +415,30 @@ async def main():
         logger.error("未设置 TELEGRAM_CHAT_ID 环境变量")
         sys.exit(1)
     
+    if not tushare_token and not finnhub_token:
+        logger.error("至少需要设置 TUSHARE_TOKEN 或 FINNHUB_TOKEN 中的一个")
+        sys.exit(1)
+    
     logger.info("=" * 50)
     logger.info("QuickFinews - 财经新闻实时推送机器人")
     logger.info("=" * 50)
-    logger.info(f"TuShare Token: {tushare_token[:10]}...")
+    
+    if tushare_token:
+        logger.info(f"TuShare Token: {tushare_token[:10]}...")
+    else:
+        logger.info("TuShare: 未启用")
+    
+    if finnhub_token:
+        logger.info(f"Finnhub Token: {finnhub_token[:10]}...")
+    else:
+        logger.info("Finnhub: 未启用")
+    
     logger.info(f"Telegram Chat ID: {telegram_chat_id}")
     logger.info(f"检查间隔: {check_interval} 秒")
     logger.info("=" * 50)
     
     # 创建机器人
-    bot = NewsBot(tushare_token, telegram_token, telegram_chat_id)
+    bot = NewsBot(tushare_token, finnhub_token, telegram_token, telegram_chat_id)
     
     # 运行机器人
     try:
