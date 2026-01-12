@@ -150,6 +150,11 @@ class TelegramNotifier:
                 datetime_ts = news.get('datetime', 0)
                 datetime_str = datetime.fromtimestamp(datetime_ts).strftime('%Y-%m-%d %H:%M:%S')
                 
+                # 清理 HTML 标签
+                import re
+                summary = re.sub(r'<[^>]+>', '', summary)
+                headline = re.sub(r'<[^>]+>', '', headline)
+                
                 # 限制摘要长度
                 if len(summary) > 200:
                     summary = summary[:200] + "..."
@@ -328,38 +333,55 @@ class NewsBot:
             logger.error(f"检查和推送 TuShare 新闻时出错: {e}")
     
     async def check_and_push_finnhub_news(self):
-        """检查并推送 Finnhub 新闻"""
+        """检查并推送 Finnhub 新闻（每个类别只推送最新一条）"""
         if not self.finnhub_collector:
             return
         
         try:
             logger.info("检查 Finnhub 新闻")
             
-            # 获取新闻
-            news_list = self.finnhub_collector.get_all_news()
-            
-            if not news_list:
-                logger.info("未发现 Finnhub 新闻")
-                return
-            
-            logger.info(f"发现 {len(news_list)} 条 Finnhub 新闻")
-            
-            # 推送新新闻
+            # 按类别分别获取新闻
             sent_count = 0
-            for news in news_list:
-                # 生成唯一ID
-                news_id = f"finnhub_{news.get('id', '')}_{news.get('category_name', '')}"
-                
-                if self.tracker.is_new(news_id):
-                    # 推送新闻
-                    success = await self.notifier.send_news(news, source_type='finnhub')
-                    if success:
-                        self.tracker.mark_as_sent(news_id)
-                        sent_count += 1
-                    # 避免请求过快
+            for category in FINNHUB_CATEGORIES:
+                try:
+                    # 获取该类别的新闻
+                    news_list = self.finnhub_collector.get_news(category)
+                    
+                    if not news_list or len(news_list) == 0:
+                        logger.info(f"未发现 Finnhub {category} 新闻")
+                        continue
+                    
+                    # 只取最新的一条（按时间排序，第一条就是最新的）
+                    latest_news = news_list[0]
+                    news_id = f"finnhub_{latest_news.get('id', '')}_{category}"
+                    
+                    # 检查是否已推送
+                    if self.tracker.is_new(news_id):
+                        logger.info(f"Finnhub {category} 有新新闻: {latest_news.get('headline', '')[:50]}...")
+                        
+                        # 推送新闻
+                        success = await self.notifier.send_news(latest_news, source_type='finnhub')
+                        if success:
+                            self.tracker.mark_as_sent(news_id)
+                            sent_count += 1
+                            logger.info(f"✓ 已推送 Finnhub {category} 最新新闻")
+                        
+                        # 避免请求过快
+                        await asyncio.sleep(0.5)
+                    else:
+                        logger.debug(f"Finnhub {category} 最新新闻已推送过")
+                    
+                    # 避免 API 请求过快
                     await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    logger.error(f"处理 Finnhub {category} 新闻时出错: {e}")
+                    continue
             
-            logger.info(f"本次推送了 {sent_count} 条 Finnhub 新闻")
+            if sent_count > 0:
+                logger.info(f"本次推送了 {sent_count} 条 Finnhub 新闻")
+            else:
+                logger.info("没有新的 Finnhub 新闻需要推送")
             
         except Exception as e:
             logger.error(f"检查和推送 Finnhub 新闻时出错: {e}")
