@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  quickfinews:
+    build: .
+    container_name: quickfinews
+    restart: always
+    environment:
+      - TUSHARE_TOKEN=${TUSHARE_TOKEN}
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-60}
+    volumes:
+      - ./logs:/app/logs
+      - ./news_history.json:/app/news_history.json
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
